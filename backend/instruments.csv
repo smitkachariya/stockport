@@ -1,1 +1,4 @@
-404: Not Found
+token,symbol,name,expiry,strike,lotsize,instrumenttype,exch_seg
+99926000,Nifty 50,NIFTY,,0.000000,1,AMXIDX,NSE
+99926001,Nifty Bank,NIFTY BANK,,0.000000,1,AMXIDX,NSE
+99926002,Nifty IT,NIFTY IT,,0.000000,1,AMXIDX,NSE

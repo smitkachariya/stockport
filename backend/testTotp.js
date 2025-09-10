@@ -1,11 +1,17 @@
-import speakeasy from "speakeasy";
+import { authenticator } from "otplib";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const otp = speakeasy.totp({
-  secret: process.env.TOTP_SECRET,
-  encoding: "base32",
-});
+const generateTOTP = () => {
+  try {
+    const totp = authenticator.generate(process.env.TOTP_SECRET);
+    console.log("Generated TOTP:", totp);
+    return totp;
+  } catch (error) {
+    console.error("Error generating TOTP:", error);
+  }
+};
 
-console.log("Generated OTP:", otp);
+// Generate TOTP
+generateTOTP();

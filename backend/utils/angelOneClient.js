@@ -12,18 +12,30 @@ class AngelOneClient {
   }
 
   async login() {
-    const totp = authenticator.generate(process.env.TOTP_SECRET);
-    const resp = await this.smart.generateSession(
-      process.env.CLIENT_ID,
-      process.env.PASSWORD,
-      totp
-    );
-    if (!resp || !resp.data || !resp.data.jwtToken) {
-      throw new Error(JSON.stringify(resp));
+    try {
+      const totp = authenticator.generate(process.env.TOTP_SECRET);
+      console.log(`🔐 Generated TOTP: ${totp}`);
+      
+      const resp = await this.smart.generateSession(
+        process.env.CLIENT_ID,
+        process.env.PASSWORD,
+        totp
+      );
+      
+      console.log(`🔑 AngelOne API Response:`, resp);
+      
+      if (!resp || !resp.data || !resp.data.jwtToken) {
+        throw new Error(`AngelOne API Error: ${JSON.stringify(resp)}`);
+      }
+      
+      this.jwt = resp.data.jwtToken;
+      this.lastLogin = Date.now();
+      console.log(`✅ AngelOne login successful`);
+      return resp.data;
+    } catch (error) {
+      console.error(`❌ AngelOne login failed:`, error.message);
+      throw error;
     }
-    this.jwt = resp.data.jwtToken;
-    this.lastLogin = Date.now();
-    return resp.data;
   }
 
   async ensureSession() {
@@ -41,8 +53,38 @@ class AngelOneClient {
     return this.smart.placeOrder(params);
   }
   async getLTP({ tradingsymbol, symboltoken }) {
-    await this.ensureSession();
-    return this.smart.getLTP({ tradingsymbol, symboltoken });
+    try {
+      await this.ensureSession();
+      console.log(`📊 Fetching LTP for ${tradingsymbol} (${symboltoken})`);
+      
+      // Try different methods available in SmartAPI
+      let response;
+      if (this.smart.getLTP) {
+        response = await this.smart.getLTP({ tradingsymbol, symboltoken });
+      } else if (this.smart.getMarketData) {
+        response = await this.smart.getMarketData({
+          mode: "LTP",
+          exchangeTokens: [{
+            exchange: "NSE",
+            token: symboltoken
+          }]
+        });
+      } else if (this.smart.ltpData) {
+        response = await this.smart.ltpData({
+          exchange: "NSE",
+          tradingsymbol: tradingsymbol,
+          symboltoken: symboltoken
+        });
+      } else {
+        throw new Error("No LTP method available in SmartAPI");
+      }
+      
+      console.log(`📈 LTP Response for ${tradingsymbol}:`, response);
+      return response;
+    } catch (error) {
+      console.error(`❌ LTP fetch failed for ${tradingsymbol}:`, error.message);
+      throw error;
+    }
   }
 
   // scrip master (SDK may have method; else use axios to download CSV and parse)
