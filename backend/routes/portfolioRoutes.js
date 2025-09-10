@@ -1,20 +1,44 @@
 import express from "express";
 import Portfolio from "../models/Portfolio.js";
+import Instrument from "../models/Instrument.js"; // instruments collection
 import { protect } from "../middleware/authMiddleware.js";
+import { smart_api } from "../utils/angelOne.js"; // SmartAPI wrapper instance
 
 const router = express.Router();
 
 /**
- * Get logged-in user's portfolio
+ * Get logged-in user's portfolio with live prices
  * GET /api/portfolio
  */
 router.get("/", protect, async (req, res) => {
   try {
     const portfolio = await Portfolio.findOne({ userId: req.user._id });
-    if (!portfolio) {
-      return res.json({ stocks: [] });
+    if (!portfolio) return res.json({ stocks: [] });
+
+    const tokens = portfolio.stocks.map(s => ({
+      exchange: s.exchange,
+      tradingsymbol: s.symbol,
+      symboltoken: s.symbolToken,
+    }));
+
+    let prices = {};
+    if (tokens.length > 0) {
+      const response = await smart_api.getLtpData({ data: tokens });
+      prices = response.data || {};
     }
-    res.json(portfolio);
+
+    const enriched = portfolio.stocks.map(stock => {
+      const live = prices[stock.symbolToken];
+      const currentPrice = live?.ltp || stock.avgPrice;
+      const pnl = (currentPrice - stock.avgPrice) * stock.quantity;
+      return {
+        ...stock.toObject(),
+        currentPrice,
+        pnl,
+      };
+    });
+
+    res.json(enriched);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -25,23 +49,23 @@ router.get("/", protect, async (req, res) => {
  * POST /api/portfolio/buy
  */
 router.post("/buy", protect, async (req, res) => {
-  const { symbol, fullName, quantity, avgPrice } = req.body;
-
-  if (!symbol || !fullName || !quantity || !avgPrice) {
-    return res.status(400).json({ message: "All fields are required" });
-  }
+  const { symbol, quantity, avgPrice } = req.body;
 
   try {
-    let portfolio = await Portfolio.findOne({ userId: req.user._id });
+    const instrument = await Instrument.findOne({ symbol });
+    if (!instrument) {
+      return res.status(404).json({ message: "Symbol not found" });
+    }
 
+    let portfolio = await Portfolio.findOne({ userId: req.user._id });
     if (!portfolio) {
       portfolio = new Portfolio({ userId: req.user._id, stocks: [] });
     }
 
-    const stockIndex = portfolio.stocks.findIndex((s) => s.symbol === symbol);
+    const stockIndex = portfolio.stocks.findIndex(s => s.symbol === symbol);
 
     if (stockIndex > -1) {
-      // stock already exists → update avg price & quantity
+      // Update existing stock
       const existingStock = portfolio.stocks[stockIndex];
       const totalCost =
         existingStock.avgPrice * existingStock.quantity + avgPrice * quantity;
@@ -49,8 +73,15 @@ router.post("/buy", protect, async (req, res) => {
       existingStock.avgPrice = totalCost / newQuantity;
       existingStock.quantity = newQuantity;
     } else {
-      // add new stock
-      portfolio.stocks.push({ symbol, fullName, quantity, avgPrice });
+      // Add new stock with token
+      portfolio.stocks.push({
+        symbol,
+        symbolToken: instrument.token,
+        exchange: instrument.exchange,
+        fullName: instrument.name,
+        quantity,
+        avgPrice,
+      });
     }
 
     await portfolio.save();
@@ -65,72 +96,32 @@ router.post("/buy", protect, async (req, res) => {
  * POST /api/portfolio/sell
  */
 router.post("/sell", protect, async (req, res) => {
-  const { symbol, quantity, orderType, limitPrice } = req.body;
-  // orderType: "MARKET" or "LIMIT"
-
-  if (!symbol || !quantity || !orderType) {
-    return res
-      .status(400)
-      .json({ message: "Symbol, quantity, and orderType are required" });
-  }
+  const { symbol, quantity } = req.body;
 
   try {
     const portfolio = await Portfolio.findOne({ userId: req.user._id });
 
-    if (!portfolio) {
-      return res.status(404).json({ message: "Portfolio not found" });
-    }
+    if (!portfolio) return res.status(404).json({ message: "Portfolio not found" });
 
-    const stockIndex = portfolio.stocks.findIndex((s) => s.symbol === symbol);
+    const stockIndex = portfolio.stocks.findIndex(s => s.symbol === symbol);
     if (stockIndex === -1) {
       return res.status(404).json({ message: "Stock not found in portfolio" });
     }
 
     const stock = portfolio.stocks[stockIndex];
+
     if (stock.quantity < quantity) {
-      return res
-        .status(400)
-        .json({ message: "Not enough stock quantity to sell" });
+      return res.status(400).json({ message: "Not enough stock quantity to sell" });
     }
 
-    // --- Step 1: Place Sell Order with AngelOne ---
-    let angelOrder;
-    if (orderType === "MARKET") {
-      angelOrder = await AngelOneClient.placeOrder({
-        symbol,
-        quantity,
-        transactionType: "SELL",
-        orderType: "MARKET",
-      });
-    } else if (orderType === "LIMIT") {
-      if (!limitPrice) {
-        return res.status(400).json({ message: "Limit price is required" });
-      }
-      angelOrder = await AngelOneClient.placeOrder({
-        symbol,
-        quantity,
-        transactionType: "SELL",
-        orderType: "LIMIT",
-        price: limitPrice,
-      });
+    stock.quantity -= quantity;
+
+    if (stock.quantity === 0) {
+      portfolio.stocks.splice(stockIndex, 1);
     }
 
-    // --- Step 2: Update Local Portfolio only after confirmation ---
-    if (angelOrder.status === "SUCCESS") {
-      stock.quantity -= quantity;
-
-      if (stock.quantity === 0) {
-        portfolio.stocks.splice(stockIndex, 1);
-      }
-
-      await portfolio.save();
-    }
-
-    res.json({
-      message: "Sell order placed successfully",
-      angelOrder,
-      portfolio,
-    });
+    await portfolio.save();
+    res.json(portfolio);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

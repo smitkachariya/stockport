@@ -1,47 +1,55 @@
-import axios from "axios";
-
-const ANGEL_BASE_URL =
-  "https://apiconnect.angelbroking.com/rest/secure/angelbroking/order/v1";
-const CLIENT_CODE = process.env.ANGEL_CLIENT_CODE;
-const API_KEY = process.env.ANGEL_API_KEY;
-const JWT_TOKEN = process.env.ANGEL_JWT_TOKEN; // from AngelOne login
-
-const headers = {
-  "X-UserType": "USER",
-  "X-SourceID": "WEB",
-  "X-ClientLocalIP": "192.168.0.1",
-  "X-ClientPublicIP": "192.168.0.1",
-  "X-MACAddress": "00:0a:95:9d:68:16",
-  "X-PrivateKey": API_KEY,
-  Authorization: `Bearer ${JWT_TOKEN}`,
-  "Content-Type": "application/json",
-};
+// backend/utils/angelOneClient.js
+import { SmartAPI } from "smartapi-javascript";
+import { authenticator } from "otplib";
+import dotenv from "dotenv";
+dotenv.config();
 
 class AngelOneClient {
-  static async placeOrder({
-    symbol,
-    quantity,
-    transactionType,
-    orderType,
-    price,
-  }) {
-    const payload = {
-      exchange: "NSE",
-      tradingsymbol: symbol,
-      transactiontype: transactionType, // BUY or SELL
-      ordertype: orderType, // MARKET or LIMIT
-      quantity,
-      price: orderType === "LIMIT" ? price : 0,
-      variety: "NORMAL",
-      producttype: "DELIVERY",
-      duration: "DAY",
-    };
+  constructor() {
+    this.smart = new SmartAPI({ api_key: process.env.API_KEY });
+    this.jwt = null;
+    this.lastLogin = 0;
+  }
 
-    const response = await axios.post(`${ANGEL_BASE_URL}/placeOrder`, payload, {
-      headers,
-    });
-    return response.data;
+  async login() {
+    const totp = authenticator.generate(process.env.TOTP_SECRET);
+    const resp = await this.smart.generateSession(
+      process.env.CLIENT_ID,
+      process.env.PASSWORD,
+      totp
+    );
+    if (!resp || !resp.data || !resp.data.jwtToken) {
+      throw new Error(JSON.stringify(resp));
+    }
+    this.jwt = resp.data.jwtToken;
+    this.lastLogin = Date.now();
+    return resp.data;
+  }
+
+  async ensureSession() {
+    if (!this.jwt) await this.login();
+    // optionally check expiry & re-login if older than 23 hours
+  }
+
+  // example wrappers
+  async getProfile() {
+    await this.ensureSession();
+    return this.smart.getProfile();
+  }
+  async placeOrder(params) {
+    await this.ensureSession();
+    return this.smart.placeOrder(params);
+  }
+  async getLTP({ tradingsymbol, symboltoken }) {
+    await this.ensureSession();
+    return this.smart.getLTP({ tradingsymbol, symboltoken });
+  }
+
+  // scrip master (SDK may have method; else use axios to download CSV and parse)
+  async getScripMaster() {
+    await this.ensureSession();
+    return this.smart.getScripMaster();
   }
 }
 
-export default AngelOneClient;
+export default new AngelOneClient();
